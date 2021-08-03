@@ -1,7 +1,7 @@
 
 <#PSScriptInfo
 
-.VERSION 1.3
+.VERSION 1.31
 
 .GUID 1583b204-6525-452a-8ae5-4c53ba2ae1fd
 
@@ -116,12 +116,14 @@ Get-LocalUser | Where-Object {$ExcludedLocalAccounts -notcontains $_.Name} | For
     }
 }
 
-# Clear all Kerberos tickets.
+# Clear all Kerberos tickets. Run as a separate job because sometimes this part hangs for an unknown reason.
 Start-Job -ScriptBlock {
     Get-CimInstance -ClassName 'Win32_LogonSession' -ErrorAction Stop | Where-Object {$_.AuthenticationPackage -ne 'NTLM'} | ForEach-Object {
         klist.exe purge -li ([Convert]::ToString($_.LogonId, 16)) 
     }
 }
+# Provide a cushion to allow the Kerberos ticket clear job an opportunity to complete.
+Start-Sleep -Seconds 5
 
 # Shutdown the computer once completed
 Stop-Computer -Force
