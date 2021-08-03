@@ -1,8 +1,41 @@
+
+<#PSScriptInfo
+
+.VERSION 1.3
+
+.GUID 1583b204-6525-452a-8ae5-4c53ba2ae1fd
+
+.AUTHOR finackninja
+
+.COMPANYNAME 
+
+.COPYRIGHT 
+
+.TAGS
+
+.LICENSEURI https://github.com/finackninja/CSFRTR/blob/main/LICENSE
+
+.PROJECTURI https://github.com/finackninja/CSFRTR
+
+.ICONURI 
+
+.EXTERNALMODULEDEPENDENCIES 
+
+.REQUIREDSCRIPTS
+
+.EXTERNALSCRIPTDEPENDENCIES
+
+.RELEASENOTES
+    
+.PRIVATEDATA
+
+#>
+
 <#
 .SYNOPSIS
-    Protects a computer endpoint upon user termination from the terminated user.
+    Protects a Windows computer endpoint upon user termination from the terminated user.
 .DESCRIPTION
-    This script is designed to run through CrowdStrike Falcon realtime response (RTR) in order to protect a computer endpoint in a terminated user's possession. It takes the following actions:
+    This script is designed to run through CrowdStrike Falcon realtime response (RTR) in order to protect a Windows computer endpoint in a terminated user's possession. It takes the following actions:
 
     * Log off all users
     * Disables cached credentials.
@@ -11,9 +44,11 @@
     * Shuts down the computer.
 #>
 
+[CmdletBinding()]
+Param ()
+
 $ExcludedLocalAccounts = @(
     'DefaultAccount',
-    'Guest',
     'WDAGUtilityAccount'
 )
 
@@ -71,6 +106,7 @@ Get-LocalUser | Where-Object {$ExcludedLocalAccounts -notcontains $_.Name} | For
            $password = $password + (Get-RandomCharacters -length $numberofcharactersperitem[3] -characters "~!@#$%^&*_-+=`|\(){}[]:;`"'<>,.?/'")
 
            $password = Scramble-String($password)
+           $password
         }
         $_ | Set-LocalUser -Password $Password -ErrorAction Stop
         $Password.Dispose()
@@ -81,17 +117,11 @@ Get-LocalUser | Where-Object {$ExcludedLocalAccounts -notcontains $_.Name} | For
 }
 
 # Clear all Kerberos tickets.
-try {
-    Start-Job -ScriptBlock {
-            Get-CimInstance -ClassName 'Win32_LogonSession' -ErrorAction Stop | Where-Object {$_.AuthenticationPackage -ne 'NTLM'} | ForEach-Object {
-                Start-process klist.exe purge -li ([Convert]::ToString($_.LogonId, 16)) 
-            }
-        }
-}
-catch {
-    Write-Warning -Message 'There was an exception when attempting to clear Kerberos tickets.'
+Start-Job -ScriptBlock {
+    Get-CimInstance -ClassName 'Win32_LogonSession' -ErrorAction Stop | Where-Object {$_.AuthenticationPackage -ne 'NTLM'} | ForEach-Object {
+        klist.exe purge -li ([Convert]::ToString($_.LogonId, 16)) 
+    }
 }
 
 # Shutdown the computer once completed
-Start-Sleep 10
 Stop-Computer -Force
