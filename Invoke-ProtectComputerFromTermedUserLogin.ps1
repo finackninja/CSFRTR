@@ -1,23 +1,22 @@
-
 <#PSScriptInfo
 
-.VERSION 1.31
+.VERSION 1.4
 
 .GUID 1583b204-6525-452a-8ae5-4c53ba2ae1fd
 
 .AUTHOR finackninja
 
-.COMPANYNAME 
+.COMPANYNAME
 
-.COPYRIGHT 
+.COPYRIGHT (c) 2024 finackninja. Released under the MIT License.
 
-.TAGS
+.TAGS "CrowdStrike", "Contain", "TerminatedUser", "TerminatedEmployee"
 
 .LICENSEURI https://github.com/finackninja/CSFRTR/blob/main/LICENSE
 
 .PROJECTURI https://github.com/finackninja/CSFRTR
 
-.ICONURI 
+.ICONURI
 
 .EXTERNALMODULEDEPENDENCIES 
 
@@ -26,16 +25,14 @@
 .EXTERNALSCRIPTDEPENDENCIES
 
 .RELEASENOTES
-    
+    Fixed forced user logoff code.
+
 .PRIVATEDATA
 
-#>
-
-<#
 .SYNOPSIS
-    Protects a Windows computer endpoint upon user termination from the terminated user.
+    Protects a computer endpoint upon user termination from the terminated user.
 .DESCRIPTION
-    This script is designed to run through CrowdStrike Falcon realtime response (RTR) in order to protect a Windows computer endpoint in a terminated user's possession. It takes the following actions:
+    This script is designed to run through CrowdStrike Falcon realtime response (RTR) in order to protect a computer endpoint in a terminated user's possession. It takes the following actions:
 
     * Log off all users
     * Disables cached credentials.
@@ -44,17 +41,52 @@
     * Shuts down the computer.
 #>
 
-[CmdletBinding()]
-Param ()
-
 $ExcludedLocalAccounts = @(
     'DefaultAccount',
+    'Guest',
     'WDAGUtilityAccount'
 )
 
+#region LOGOFF_USERS
+#-------------------------------------------------------------------------------
+
 # Log off all current user sessions
 
-Invoke-CimMethod -ClassName Win32_Operatingsystem -ComputerName . -MethodName Win32Shutdown -Arguments @{ Flags = 4 }
+# This command does not seem to work as written. Commented out.
+#Invoke-CimMethod -ClassName Win32_Operatingsystem -ComputerName . -MethodName Win32Shutdown -Arguments @{ Flags = 4 }
+
+# Get logon sessions from the "quser.exe" command.
+$Sessions = [System.Collections.Generic.List[PSCustomObject]]::new()
+$QUser = quser 2>$null | Select-Object -Skip 1
+$QUser | ForEach-Object { 
+    $Result = $_ -match '.(.{22})(.{18})(.{5})(.{8})(.{11})(.{16,18})' 
+
+    $Session = [pscustomobject] @{
+        Username = $matches[1].trim()
+        SessionName = $matches[2].trim()
+        Id = [int]$matches[3].trim()
+        State = $matches[4].trim()
+        IdleTime = $matches[5].trim()
+        LogonTime = [datetime]$matches[6].trim()
+    }
+	$Sessions.Add($Session)
+    $Session = $null
+}
+$Result = $null
+$QUser = $null
+
+# Log off all sessions
+ForEach ($Session in $Sessions) {
+    logoff $Session.Id
+}
+$Sessions = $null
+
+#-------------------------------------------------------------------------------
+#endregion LOGOFF_USERS
+
+
+#region DISABLE_CACHED_CREDENTIALS
+#-------------------------------------------------------------------------------
 
 # Disable cached credentials.
 try {
@@ -66,6 +98,13 @@ try {
 catch {
     Write-Warning -Message 'Unable to disable cached credentials.'
 }
+
+#-------------------------------------------------------------------------------
+#endregion DISABLE_CACHED_CREDENTIALS
+
+
+#region CHANGE_LOCAL_PASSWORDS
+#-------------------------------------------------------------------------------
 
 # Change local account passwords.
 
@@ -106,7 +145,6 @@ Get-LocalUser | Where-Object {$ExcludedLocalAccounts -notcontains $_.Name} | For
            $password = $password + (Get-RandomCharacters -length $numberofcharactersperitem[3] -characters "~!@#$%^&*_-+=`|\(){}[]:;`"'<>,.?/'")
 
            $password = Scramble-String($password)
-           $password
         }
         $_ | Set-LocalUser -Password $Password -ErrorAction Stop
         $Password.Dispose()
@@ -116,14 +154,35 @@ Get-LocalUser | Where-Object {$ExcludedLocalAccounts -notcontains $_.Name} | For
     }
 }
 
-# Clear all Kerberos tickets. Run as a separate job because sometimes this part hangs for an unknown reason.
-Start-Job -ScriptBlock {
-    Get-CimInstance -ClassName 'Win32_LogonSession' -ErrorAction Stop | Where-Object {$_.AuthenticationPackage -ne 'NTLM'} | ForEach-Object {
-        klist.exe purge -li ([Convert]::ToString($_.LogonId, 16)) 
-    }
+#-------------------------------------------------------------------------------
+#endregion CHANGE_LOCAL_PASSWORDS
+
+
+#region CLEAR_KERBEROS_TICKETS
+#-------------------------------------------------------------------------------
+
+# Make best effort to clear all Kerberos tickets. Runs as a separate job because this process occassionally hangs.
+try {
+    Start-Job -ScriptBlock {
+            Get-CimInstance -ClassName 'Win32_LogonSession' -ErrorAction Stop | Where-Object {$_.AuthenticationPackage -ne 'NTLM'} | ForEach-Object {
+                Start-process klist.exe purge -li ([Convert]::ToString($_.LogonId, 16)) 
+            }
+        }
 }
-# Provide a cushion to allow the Kerberos ticket clear job an opportunity to complete.
-Start-Sleep -Seconds 5
+catch {
+    Write-Warning -Message 'There was an exception when attempting to clear Kerberos tickets.'
+}
+
+#-------------------------------------------------------------------------------
+#endregion CLEAR_KERBEROS_TICKETS
+
+
+#region SHUTDOWN
+#-------------------------------------------------------------------------------
 
 # Shutdown the computer once completed
+Start-Sleep 10
 Stop-Computer -Force
+
+#-------------------------------------------------------------------------------
+#endregion SHUTDOWN
